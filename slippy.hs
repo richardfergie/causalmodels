@@ -161,10 +161,21 @@ nearlyEqual threshold a b = (isNaN a && isNaN b) || abs (a-b) < threshold
 
   so for all x,y,z calculate pXGivenY x z and pXGivenY x (z and y) then check equal
 -}
-
+{-conditionallyIndependent :: (Bounded a, Bounded b, Bounded c, 
+                             Enum a, Enum b, Enum c, 
+                             Eq c, Eq a) =>
+     (a -> WorldState -> Bool)-> 
+     (b -> WorldState -> Bool)-> 
+     (c -> WorldState -> Bool)-> 
+     [WorldState]->
+     Bool
+-}
 conditionallyIndependent hasX hasY hasZ obs = and $ map (\a -> check a xGivenZY) xGivenZ 
   where xGivenZ = [(x,z,pXGivenY (hasX x) (hasZ z) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound]]
         xGivenZY = [(x,z,y,pXGivenY (hasX x) (\s -> hasY y s && hasZ z s) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound],y<-[minBound,maxBound]]
-        
-check (x,z,p) lst = all (nearlyEqual 0.0005 p) $ map (\(x1,z1,y1,p1)->p1) $ filter (\(x1,z1,y1,p1)->x==x1 && z==z1 && (not $ isNaN p1)) lst
+
+check (x,z,p) lst = all (nearlyEqual 0.0005 p) $ 
+                              map (\(x1,z1,y1,p1)->p1) $ 
+                              --not sure about NaN handling here
+                              filter (\(x1,z1,y1,p1)->x==x1 && z==z1 && (not $ isNaN p1)) lst
         
