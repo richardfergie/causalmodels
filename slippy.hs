@@ -125,14 +125,46 @@ distributionXandY :: (Bounded a, Bounded b, Enum a, Enum b, Eq a, Eq b) =>
 distributionXandY hasX hasY obs = toDistribution (\(x,y) s -> hasX x s && hasY y s) obs
 
 -- P(X=x|Y=y)
--- returns NaN is X and Y are never seen together in the observations
+-- returns NaN if Y is never seen in the observations
 distributionXGivenY  :: (Bounded t, Bounded a, Enum t, Enum a) =>
      (a -> WorldState -> Bool) -> 
      (t -> WorldState -> Bool) -> 
      [WorldState] -> 
-     [(a, t, Float)]
+     [((a, t), Float)]
 distributionXGivenY hasX hasY obs = concatMap (\(y,world)->tidyResult (y,toDistribution hasX world)) worldsWithY
   where allY = enumFromTo minBound maxBound --enumerate list of all Y
         worldsWithY = [(y,filter (hasY y) obs)|y<-allY] -- filter observations where Y=y
-        tidyResult (y,(x:xs)) = (fst x,y,snd x):(tidyResult (y,xs)) -- tidy up the results a bit
+        tidyResult (y,(x:xs)) = ((fst x,y),snd x):(tidyResult (y,xs)) -- tidy up the results a bit
         tidyResult (y,[]) = []
+        
+-- need to test for conditional independence
+-- X is independent of Y given Z if P(X|Z)=P(X|Z,Y)
+-- So first need a way of checking two distributions are equal
+-- A direct equality check won't work for two reasons:
+--    1. Floating point numbers
+--    2. The distribution P(X|Z) looks something like [((x,z),p)] 
+--       but P(X|Y,Z) looks like [((x,(y,z)),p)]
+
+nearlyEqual :: Float -> Float -> Float -> Bool
+nearlyEqual threshold a b = (isNaN a && isNaN b) || abs (a-b) < threshold
+
+{-
+  > distributionXGivenY hasSlippy (\(x,y) s -> hasPath x s && hasWeather y s) obs
+  [((Slippy,(Wet,Rain)),1.0),((Grippy,(Wet,Rain)),0.0),((Slippy,(Wet,Sun)),1.0),((Grippy,(Wet,Sun)),0.0),((Slippy,(Dry,Rain)),NaN),((Grippy,(Dry,Rain)),NaN),((Slippy,(Dry,Sun)),0.0),((Grippy,(Dry,Sun)),1.0)]
+
+  > distributionXGivenY hasSlippy hasPath obs
+  [((Slippy,Wet),1.0),((Grippy,Wet),0.0),((Slippy,Dry),0.0),((Grippy,Dry),1.0)]
+
+  In what sense are these equal? P(X|Z) = sum over Y of P(X|Z,Y)?
+
+  X,Y conditionally independent given Z if for all y P(X|Z)=P(X|Z AND Y=y)
+
+  so for all x,y,z calculate pXGivenY x z and pXGivenY x (z and y) then check equal
+-}
+
+conditionallyIndependent hasX hasY hasZ obs = and $ map (\a -> check a xGivenZY) xGivenZ 
+  where xGivenZ = [(x,z,pXGivenY (hasX x) (hasZ z) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound]]
+        xGivenZY = [(x,z,y,pXGivenY (hasX x) (\s -> hasY y s && hasZ z s) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound],y<-[minBound,maxBound]]
+        
+check (x,z,p) lst = all (nearlyEqual 0.0005 p) $ map (\(x1,z1,y1,p1)->p1) $ filter (\(x1,z1,y1,p1)->x==x1 && z==z1 && (not $ isNaN p1)) lst
+        
