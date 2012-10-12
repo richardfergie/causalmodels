@@ -161,21 +161,38 @@ nearlyEqual threshold a b = (isNaN a && isNaN b) || abs (a-b) < threshold
 
   so for all x,y,z calculate pXGivenY x z and pXGivenY x (z and y) then check equal
 -}
-{-conditionallyIndependent :: (Bounded a, Bounded b, Bounded c, 
-                             Enum a, Enum b, Enum c, 
+conditionallyIndependent :: (Bounded a, Bounded c, 
+                             Enum a, Enum c, 
                              Eq c, Eq a) =>
      (a -> WorldState -> Bool)-> 
-     (b -> WorldState -> Bool)-> 
-     (c -> WorldState -> Bool)-> 
+     [WorldState -> Bool]-> 
+     (c -> WorldState -> Bool)->
      [WorldState]->
      Bool
--}
-conditionallyIndependent hasX hasY hasZ obs = and $ map (\a -> check a xGivenZY) xGivenZ 
+-- X is independent of Y given Z
+-- e.g. Slippyness is independent of Weather given Path
+conditionallyIndependent hasX ys hasZ obs = and $ map (\a -> check a xGivenZY) xGivenZ 
   where xGivenZ = [(x,z,pXGivenY (hasX x) (hasZ z) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound]]
-        xGivenZY = [(x,z,y,pXGivenY (hasX x) (\s -> hasY y s && hasZ z s) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound],y<-[minBound,maxBound]]
+        xGivenZY = [(x,z,y,pXGivenY (hasX x) (\s -> y s && hasZ z s) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound],y<-ys]
 
 check (x,z,p) lst = all (nearlyEqual 0.0005 p) $ 
                               map (\(x1,z1,y1,p1)->p1) $ 
                               --not sure about NaN handling here
                               filter (\(x1,z1,y1,p1)->x==x1 && z==z1 && (not $ isNaN p1)) lst
         
+{-
+Can draw a link between two nodes X and Y if for every set of nodes Z
+(X,Y not in Z) X is conditionally independent of Z given Y
+
+First need a way of generating all nodes
+In the model I've used thus far, a node is a function from some state (e.g. Summer) to a WorldState to Bool
+How to encapsulate this in a list?
+Season->WorldState->Bool can't be in the same list as Rain->WorldState->Bool
+-}
+powerset :: [a] -> [[a]]
+powerset [] = [[]]
+powerset (x:xs) = powerset xs ++ map (x:) (powerset xs)
+
+causalLink :: (Bounded b, Bounded a, Enum b, Enum a, Eq a, Eq b) => (a->WorldState->Bool)->(b->WorldState->Bool)->[WorldState->Bool]->[WorldState]->Bool
+causalLink hasX hasY restofworld obs = and $ map (\z->conditionallyIndependent hasX z hasY obs) subsets 
+  where subsets = powerset restofworld
