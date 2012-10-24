@@ -14,185 +14,73 @@ The network looks like this:
 -}
 
 import Control.Monad.Random
-import Data.List
+import qualified Numeric.Probability.Distribution as Dist
+import Numeric.Probability.Distribution ((??), (?=<<), )
 
 -- data types representing the different states of the nodes
-data Season = Winter|Spring|Summer|Autumn deriving (Show,Eq,Bounded,Enum)
-data Sprinkler = On|Off deriving (Show,Eq,Bounded,Enum)
-data Weather = Rain|Sun deriving (Show,Eq,Bounded,Enum)
-data Path = Wet|Dry deriving (Show,Eq,Bounded,Enum)
-data Slippy = Slippy|Grippy deriving (Show,Eq,Bounded,Enum)
+data Season = Winter|Spring|Summer|Autumn deriving (Show,Eq,Bounded,Enum,Ord)
+data Sprinkler = On|Off deriving (Show,Eq,Bounded,Enum,Ord)
+data Weather = Rain|Sun deriving (Show,Eq,Bounded,Enum,Ord)
+data Path = Wet|Dry deriving (Show,Eq,Bounded,Enum,Ord)
+data Slippy = Slippy|Grippy deriving (Show,Eq,Bounded,Enum,Ord)
 
 -- data type representing the observed state of the world
-data WorldState = WorldState !Season !Sprinkler !Weather !Path !Slippy deriving Show
+data WorldState = WorldState { season::Season 
+                              ,sprinkler::Sprinkler 
+                              ,weather:: Weather 
+                              ,path::Path 
+                              ,slippy::Slippy 
+                              } deriving (Show,Eq,Ord)
 
+type Probability = Double
+type Dist a = Dist.T Probability a
 
--- pick a season at random
--- bet there is a better way to do this
-season :: (RandomGen g) => Rand g Season
-season = do
-  i <- getRandomR (1::Int,4)
-  case i of
-    1 -> return Winter
-    2 -> return Spring
-    3 -> return Summer
-    4 -> return Autumn
-    
--- sprinkler is on in summer otherwise off
--- noise not used at the moment. Will represent exogenous
--- factors later on
-sprinkler :: (RandomGen g) => Season -> Rand g Sprinkler
-sprinkler Summer = noise 0 On 
-sprinkler _ = noise 0 Off
+seasonD :: Dist Season
+seasonD = Dist.uniform [Winter ..Autumn]
 
--- weather depends on season
-weather :: (RandomGen g) => Season -> Rand g Weather
-weather Summer = noise 0 Sun
-weather Spring = noise 0 Sun
-weather Autumn = noise 0 Rain
-weather Winter = noise 0 Rain
+sprinklerD :: Season -> Dist Sprinkler
+sprinklerD Winter = Dist.certainly Off
+sprinklerD Summer = Dist.certainly On
+sprinklerD Autumn = Dist.certainly Off
+sprinklerD Spring = Dist.certainly Off
 
--- wetness of path depends on weather and sprinkler
-path :: (RandomGen g) => Sprinkler -> Weather -> Rand g Path
-path On _ = noise 0 Wet
-path _ Rain = noise 0 Wet
-path Off Sun = noise 0 Dry
+weatherD :: Season -> Dist Weather
+weatherD Winter = Dist.certainly Rain
+weatherD Summer = Dist.certainly Sun
+weatherD Autumn = Dist.certainly Sun
+weatherD Spring = Dist.certainly Rain
 
-slippy :: (RandomGen g) => Path -> Rand g Slippy
-slippy Wet = noise 0 Slippy
-slippy Dry = noise 0 Grippy
+pathD :: Sprinkler -> Weather -> Dist Path
+pathD On _ = Dist.certainly Wet
+pathD _ Rain = Dist.certainly Wet
+pathD Off Sun = Dist.certainly Dry
 
---want this to be an error function. Need some fancy type stuff first
-noise _ x = return x
+slippyD :: Path -> Dist Slippy
+slippyD Wet = Dist.certainly Slippy
+slippyD Dry = Dist.certainly Grippy
 
--- observe a random world
-worldstate :: (RandomGen g) => Rand g WorldState
-worldstate = do
-  s <- season
-  sp <- sprinkler s
-  w <- weather s
-  p <- path sp w
-  sl <- slippy p
-  return $! WorldState s sp w p sl
+worldDistribution = do
+  s <- seasonD
+  sp <- sprinklerD s
+  we <- weatherD s
+  p <- pathD sp we
+  sl <- slippyD p
+  return $ WorldState s sp we p sl
   
--- generate lots of observations
-makeobservations :: Int -> IO [WorldState]
-makeobservations n = evalRandIO $! sequence $! replicate n worldstate
-
-hasSeason :: Season -> WorldState -> Bool 
-hasSeason x (WorldState y _ _ _ _) = x==y
-
-hasSprinkler :: Sprinkler -> WorldState -> Bool 
-hasSprinkler x (WorldState _ y _ _ _) = x==y
-
-hasWeather x (WorldState _ _ y _ _) = x==y
-
-hasPath x (WorldState _ _ _ y _) = x==y
-
-hasSlippy x (WorldState _ _ _ _ y) = x==y
-
--- P(X|Y) = P(X^Y)/P(Y)
-pXGivenY :: (WorldState->Bool) -> (WorldState->Bool) -> [WorldState] -> Float        
-pXGivenY hasX hasY obs = (fromIntegral numer)/(fromIntegral denom)
-  where denom = length $! filter (hasY) obs 
-        numer = length $! filter (\x -> hasX x && hasY x) obs
-        
--- list properties of the world along with their probabilities
-toDistribution :: (Bounded t, Enum t) =>
-     (t -> WorldState -> Bool) -> [WorldState] -> [(t, Float)]
-toDistribution hasProperty observations = map (\x -> (x, pXGivenY (hasProperty x) (const True) observations)) $! list 
-  where list = enumFromTo minBound maxBound
-
--- need this instance to get conjoined distributions
-instance (Bounded a, Enum a, Eq a, Bounded b, Enum b, Eq b) => Enum (a,b) where
--- could do this in the same way as fromEnum, but will get more useful error
--- message using succ  
-  toEnum x = apply x succ $ (minBound,minBound)
-    where apply 0 _ = id
-          apply n x = x . (apply (n-1) x)
-  fromEnum (a,b) = case elemIndex (a,b) list of
-    Nothing -> error "Cannot find in list"
-    Just n -> n
-    where list = [(x,y)|x<-enumFrom  minBound,y<-enumFrom minBound]
-  succ (a,b) = if (b==maxBound) then (succ a, minBound) else (a, succ b)
-  pred (a,b) = if (b==minBound) then (pred a, maxBound) else (a, pred b) 
-  
-distributionXandY :: (Bounded a, Bounded b, Enum a, Enum b, Eq a, Eq b) =>
-     (a -> WorldState -> Bool)-> 
-     (b -> WorldState -> Bool) -> 
-     [WorldState] -> 
-     [((a, b), Float)]
-distributionXandY hasX hasY obs = toDistribution (\(x,y) s -> hasX x s && hasY y s) obs
-
--- P(X=x|Y=y)
--- returns NaN if Y is never seen in the observations
-distributionXGivenY  :: (Bounded t, Bounded a, Enum t, Enum a) =>
-     (a -> WorldState -> Bool) -> 
-     (t -> WorldState -> Bool) -> 
-     [WorldState] -> 
-     [((a, t), Float)]
-distributionXGivenY hasX hasY obs = concatMap (\(y,world)->tidyResult (y,toDistribution hasX world)) worldsWithY
-  where allY = enumFromTo minBound maxBound --enumerate list of all Y
-        worldsWithY = [(y,filter (hasY y) obs)|y<-allY] -- filter observations where Y=y
-        tidyResult (y,(x:xs)) = ((fst x,y),snd x):(tidyResult (y,xs)) -- tidy up the results a bit
-        tidyResult (y,[]) = []
-        
--- need to test for conditional independence
--- X is independent of Y given Z if P(X|Z)=P(X|Z,Y)
--- So first need a way of checking two distributions are equal
--- A direct equality check won't work for two reasons:
---    1. Floating point numbers
---    2. The distribution P(X|Z) looks something like [((x,z),p)] 
---       but P(X|Y,Z) looks like [((x,(y,z)),p)]
-
-nearlyEqual :: Float -> Float -> Float -> Bool
-nearlyEqual threshold a b = (isNaN a && isNaN b) || abs (a-b) < threshold
-
 {-
-  > distributionXGivenY hasSlippy (\(x,y) s -> hasPath x s && hasWeather y s) obs
-  [((Slippy,(Wet,Rain)),1.0),((Grippy,(Wet,Rain)),0.0),((Slippy,(Wet,Sun)),1.0),((Grippy,(Wet,Sun)),0.0),((Slippy,(Dry,Rain)),NaN),((Grippy,(Dry,Rain)),NaN),((Slippy,(Dry,Sun)),0.0),((Grippy,(Dry,Sun)),1.0)]
+P(Path=Slippy)
+(\x->slippy x==Slippy) ?? (\x -> True) ?=<< worldDistribution
 
-  > distributionXGivenY hasSlippy hasPath obs
-  [((Slippy,Wet),1.0),((Grippy,Wet),0.0),((Slippy,Dry),0.0),((Grippy,Dry),1.0)]
+P(Path=Grippy)
+(\x->slippy x==Grippy) ?? (\x -> True) ?=<< worldDistribution
 
-  In what sense are these equal? P(X|Z) = sum over Y of P(X|Z,Y)?
-
-  X,Y conditionally independent given Z if for all y P(X|Z)=P(X|Z AND Y=y)
-
-  so for all x,y,z calculate pXGivenY x z and pXGivenY x (z and y) then check equal
+P(Season=Winter | Path=Slippy)
+(\x->season x==Winter) ?? (\x -> slippy x==Slippy) ?=<< worldDistribution
 -}
-conditionallyIndependent :: (Bounded a, Bounded c, 
-                             Enum a, Enum c, 
-                             Eq c, Eq a) =>
-     (a -> WorldState -> Bool)-> 
-     [WorldState -> Bool]-> 
-     (c -> WorldState -> Bool)->
-     [WorldState]->
-     Bool
--- X is independent of Y given Z
--- e.g. Slippyness is independent of Weather given Path
-conditionallyIndependent hasX ys hasZ obs = and $ map (\a -> check a xGivenZY) xGivenZ 
-  where xGivenZ = [(x,z,pXGivenY (hasX x) (hasZ z) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound]]
-        xGivenZY = [(x,z,y,pXGivenY (hasX x) (\s -> y s && hasZ z s) obs)|x<-[minBound..maxBound],z<-[minBound..maxBound],y<-ys]
 
-check (x,z,p) lst = all (nearlyEqual 0.0005 p) $ 
-                              map (\(x1,z1,y1,p1)->p1) $ 
-                              --not sure about NaN handling here
-                              filter (\(x1,z1,y1,p1)->x==x1 && z==z1 && (not $ isNaN p1)) lst
-        
-{-
-Can draw a link between two nodes X and Y if for every set of nodes Z
-(X,Y not in Z) X is conditionally independent of Z given Y
-
-First need a way of generating all nodes
-In the model I've used thus far, a node is a function from some state (e.g. Summer) to a WorldState to Bool
-How to encapsulate this in a list?
-Season->WorldState->Bool can't be in the same list as Rain->WorldState->Bool
--}
-powerset :: [a] -> [[a]]
-powerset [] = [[]]
-powerset (x:xs) = powerset xs ++ map (x:) (powerset xs)
-
-causalLink :: (Bounded b, Bounded a, Enum b, Enum a, Eq a, Eq b) => (a->WorldState->Bool)->(b->WorldState->Bool)->[WorldState->Bool]->[WorldState]->Bool
-causalLink hasX hasY restofworld obs = and $ map (\z->conditionallyIndependent hasX z hasY obs) subsets 
-  where subsets = powerset restofworld
+--Do foo and bar have the same distribution?
+sameDist foo bar = Dist.approx 
+                       ((\world-> foo world) ?=<< worldDistribution)
+                       ((\world-> foo world && bar world) ?=<< worldDistribution)
+                       
+conditionallyIndependent foo bars = map (sameDist foo) bars
